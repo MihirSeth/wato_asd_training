@@ -37,7 +37,12 @@ ament_target_dependencies(planner_lib
 
 # Create ROS2 node executable from source files
 add_executable(planner_node src/planner_node.cpp)
-target_link_libraries(planner_node planner_lib)
+target_link_libraries(planner_node
+    planner_lib
+    tf2::tf2
+    tf2_ros::tf2_ros
+    tf2_geometry_msgs::tf2_geometry_msgs
+)
 
 # Copy executable to installation location
 install(TARGETS
