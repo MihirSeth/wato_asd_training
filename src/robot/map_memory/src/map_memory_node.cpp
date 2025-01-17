@@ -2,10 +2,10 @@
 
 MapMemoryNode::MapMemoryNode()
     : Node("map_memory"),
-      map_memory_(robot::MapMemoryCore(this->get_logger())),
       last_x_(0.0),
       last_y_(0.0),
-      distance_threshold_(1.5) {
+      distance_threshold_(1.5),
+      map_memory_(robot::MapMemoryCore(this->get_logger())) {
     // Initialize subscribers
     costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
         "/costmap", 10, std::bind(&MapMemoryNode::costmapCallback, this, std::placeholders::_1));
