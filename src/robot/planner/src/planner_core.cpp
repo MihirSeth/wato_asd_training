@@ -4,7 +4,10 @@
 
 namespace robot {
 
-PlannerCore::PlannerCore(const rclcpp::Logger& logger) : logger_(logger) {}
+PlannerCore::PlannerCore(const rclcpp::Logger& logger)
+    : logger_(logger),
+      tf_buffer_(rclcpp::Clock::make_shared()),
+      tf_listener_(tf_buffer_) {}  // Correctly initialize TF buffer and listener
 
 void PlannerCore::computePath(
     const nav_msgs::msg::OccupancyGrid &map,
@@ -19,12 +22,13 @@ void PlannerCore::computePath(
     geometry_msgs::msg::PointStamped goalInMap;
     try {
         geometry_msgs::msg::TransformStamped transformStamped =
-            tfBuffer.lookupTransform("map", goal.header.frame_id, tf2::TimePointZero);
+            tf_buffer_.lookupTransform("map", goal.header.frame_id, tf2::TimePointZero);
         tf2::doTransform(goal, goalInMap, transformStamped);
     } catch (const tf2::TransformException &ex) {
         RCLCPP_WARN(logger_, "TF transform failed: %s", ex.what());
         return;
     }
+
 
     // Clamp the goal to be within map boundaries
     double gx_min = map.info.origin.position.x;
@@ -38,9 +42,6 @@ void PlannerCore::computePath(
     // Convert start/goal positions to grid indices
     CellIndex start_idx = worldToGrid(map, start.position.x, start.position.y);
     CellIndex goal_idx = worldToGrid(map, gx, gy);
-
-    RCLCPP_INFO(logger_, "Start idx: (%d, %d) Goal idx: (%d, %d)",
-                start_idx.x, start_idx.y, goal_idx.x, goal_idx.y);
 
     // Check validity of start/goal
     if (!isValid(map, start_idx) || !isValid(map, goal_idx)) {
@@ -89,7 +90,6 @@ void PlannerCore::computePath(
 
     RCLCPP_WARN(logger_, "Pathfinding failed: No valid path to goal!");
 }
-
 CellIndex PlannerCore::worldToGrid(const nav_msgs::msg::OccupancyGrid &map, double x, double y) const {
     int grid_x = static_cast<int>((x - map.info.origin.position.x) / map.info.resolution);
     int grid_y = static_cast<int>((y - map.info.origin.position.y) / map.info.resolution);
@@ -156,3 +156,4 @@ void PlannerCore::reconstructPath(
 }
 
 } // namespace robot
+

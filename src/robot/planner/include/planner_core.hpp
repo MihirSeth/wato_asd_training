@@ -44,7 +44,6 @@ struct CompareF {
 };
 
 namespace robot {
-
 class PlannerCore {
 public:
     explicit PlannerCore(const rclcpp::Logger& logger);
@@ -58,6 +57,9 @@ public:
 private:
     rclcpp::Logger logger_;
 
+    tf2_ros::Buffer tf_buffer_;
+    tf2_ros::TransformListener tf_listener_;
+
     CellIndex worldToGrid(const nav_msgs::msg::OccupancyGrid& map, double x, double y) const;
     bool isValid(const nav_msgs::msg::OccupancyGrid& map, const CellIndex& idx) const;
     double heuristic(const CellIndex& a, const CellIndex& b) const;
@@ -65,7 +67,5 @@ private:
     void reconstructPath(const std::unordered_map<CellIndex, CellIndex, CellIndexHash>& came_from,
                          const CellIndex& current, nav_msgs::msg::Path& path) const;
 };
-
-} // namespace robot
-
-#endif // PLANNER_CORE_HPP
+} 
+#endif // PLANNER_CORE_HPP  <-- Make sure this exists!
