@@ -37,12 +37,21 @@ void ControlCore::setPublisher(rclcpp::Publisher<geometry_msgs::msg::Twist>::Sha
 }
 
 std::optional<geometry_msgs::msg::PoseStamped> ControlCore::findLookaheadPoint() {
+    if (!current_path_ || current_path_->poses.empty()) {
+        RCLCPP_WARN(logger_, "Current path is empty.");
+        return std::nullopt;
+    }
+
     for (const auto &pose : current_path_->poses) {
         double distance = computeDistance(robot_odom_->pose.pose.position, pose.pose.position);
+        RCLCPP_INFO(logger_, "Checking pose at distance: %f", distance);
         if (distance >= lookahead_distance_) {
+            RCLCPP_INFO(logger_, "Found lookahead point at distance: %f", distance);
             return pose;
         }
     }
+
+    RCLCPP_WARN(logger_, "No valid lookahead point found in the path.");
     return std::nullopt;
 }
 
@@ -65,7 +74,7 @@ void ControlCore::stopRobot() {
 }
 
 double ControlCore::computeDistance(const geometry_msgs::msg::Point &a, const geometry_msgs::msg::Point &b) {
-    return std::hypot(a.x - b.x, a.y - b.y);
+    return std::sqrt(std::pow(a.x - b.x, 2) + std::pow(a.y - b.y, 2) + std::pow(a.z - b.z, 2));
 }
 
 double ControlCore::extractYaw(const geometry_msgs::msg::Quaternion &quat) {

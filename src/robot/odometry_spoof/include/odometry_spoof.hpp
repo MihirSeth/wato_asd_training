@@ -37,4 +37,4 @@ class OdometrySpoofNode : public rclcpp::Node {
     tf2::Quaternion last_orientation_;
 };
 
-#endif 
+#endif // ODOMETRY_SPOOF_NODE_HPP_

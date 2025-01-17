@@ -23,7 +23,7 @@ ACTIVE_MODULES="robot gazebo vis_tools"
 ##	 - deploy (default)		:	runs production-grade containers (non-editable)
 ##	 - develop   		    :	runs developer containers (editable)
 
-# MODE_OF_OPERATION="develop"
+MODE_OF_OPERATION="deploy"
 
 ############################## ADVANCED CONFIGURATIONS ##############################
 ## Name to append to docker containers. DEFAULT = "watonomous"
@@ -38,4 +38,4 @@ ACTIVE_MODULES="robot gazebo vis_tools"
 
 ## Platform in which to build the docker images with. 
 ## Either arm64 (apple silicon, raspberry pi) or amd64 (most computers)
-# PLATFORM="arm64"
+PLATFORM="arm64"

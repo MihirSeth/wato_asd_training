@@ -66,6 +66,13 @@ void PlannerNode::planPath() {
     path.header.frame_id = "map";
 
     planner_.computePath(current_map_, robot_pose_, goal_, path);
+
+    if (path.poses.empty()) {
+        RCLCPP_WARN(this->get_logger(), "Generated path is empty!");
+    } else {
+        RCLCPP_INFO(this->get_logger(), "Generated path with %lu points.", path.poses.size());
+    }
+
     path_pub_->publish(path);
 }
 

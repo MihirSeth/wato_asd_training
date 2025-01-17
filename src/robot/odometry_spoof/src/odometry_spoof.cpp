@@ -59,7 +59,7 @@ void OdometrySpoofNode::timerCallback() {
     // Compute time difference
     rclcpp::Time current_time = transform_stamped.header.stamp;
     double dt = (current_time - last_time_).seconds();
-
+    
     if (dt > 0.0)
     {
       // Linear velocity
