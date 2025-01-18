@@ -20,6 +20,7 @@ class MapMemoryNode : public rclcpp::Node {
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr string_pub_;
 
     nav_msgs::msg::OccupancyGrid global_map_;
+    
     nav_msgs::msg::OccupancyGrid latest_costmap_;
     const double distance_threshold = 1.5;
     bool costmap_updated_ = false;

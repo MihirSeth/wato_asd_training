@@ -28,7 +28,7 @@ add_library(planner_lib
 target_include_directories(planner_lib
   PUBLIC include)
 # Add ROS2 dependencies required by package
-ament_target_dependencies(planner_lib rclcpp nav_msgs, geometry_msgs, sensor_msgs)
+ament_target_dependencies(planner_lib rclcpp nav_msgs geometry_msgs sensor_msgs)
 
 # Create ROS2 node executable from source files
 add_executable(planner_node src/planner_node.cpp)

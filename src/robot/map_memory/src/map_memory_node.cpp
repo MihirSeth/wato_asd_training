@@ -12,9 +12,9 @@ MapMemoryNode::MapMemoryNode() : Node("map_memory"), map_memory_(robot::MapMemor
   timer_ = this->create_wall_timer(
     std::chrono::seconds(1), std::bind(&MapMemoryNode::updateMap, this));
   global_map_.header.stamp = this->now();
-  global_map_.header.frame_id = "global_map";
-  global_map_.data.resize(300*300 + 1);
-  for(int i = 0; i < 300*300 + 1; i++){
+  global_map_.header.frame_id = "sim_world";
+  global_map_.data.resize(300*300);
+  for(int i = 0; i < 300*300; i++){
     global_map_.data[i] = 0;
   } //init everything to 0. albeit poorly  
   string_pub_ = this->create_publisher<std_msgs::msg::String>("/map_display", 50);
@@ -22,12 +22,14 @@ MapMemoryNode::MapMemoryNode() : Node("map_memory"), map_memory_(robot::MapMemor
 
 void MapMemoryNode::costmapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
     // Store the latest costmap
+    //this->global_map_.header = msg->header;
+    this->global_map_.info = msg->info;
     this->latest_costmap_ = *msg;
     this->costmap_updated_ = true;
 }
 
 void MapMemoryNode::publishMessage(int8_t* grid){
-    std::stringstream ss;
+    /*std::stringstream ss;
     for (int y = 0; y < GRIDSIZE; y+=5) {
       for (int x = 0; x < GRIDSIZE; x+=5) {
         if(grid[300*x + y] > 50){
@@ -42,8 +44,10 @@ void MapMemoryNode::publishMessage(int8_t* grid){
     }
     auto message = std_msgs::msg::String();
     message.data = ss.str();
+    message.data = "";
     RCLCPP_INFO(this->get_logger(), "MemoryMap:\n%s", message.data.c_str());
-    string_pub_->publish(message);
+    string_pub_->publish(message); */
+    return;
 }
 
 void MapMemoryNode::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -78,10 +82,11 @@ void MapMemoryNode::integrateCostmap(){
       else if(global_map_.data[300*x + y] <  latest_costmap_.data[300*x + y] && latest_costmap_.data[300*x + y] > 50){
         global_map_.data[300*x + y] = latest_costmap_.data[300*x + y];
       }
-      global_map_.data[300*x + y] *= 0.994;
+      global_map_.data[300*x + y] *= 0.92;
     }
   }
 }
+
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);

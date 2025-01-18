@@ -150,11 +150,32 @@ void CostmapNode::lidar_sub(const sensor_msgs::msg::LaserScan::SharedPtr scan){
     }
  
     // Step 3: Inflate obstacles
-    inflateObstacles(array, 1, 100);
+    inflateObstacles(array, 1.6, 100);
     //publishMessage(array);
     // Step 4: Publish costmap
-    publishCostmap(array);
-    
+    auto msg = nav_msgs::msg::OccupancyGrid();
+    msg.header = scan->header;
+    msg.info.width = 300;
+    msg.info.height = 300;
+    msg.info.resolution = 0.1;
+    msg.info.origin.position.x = -15;  // X coordinate in meters
+    msg.info.origin.position.y = -15;  // Y coordinate in meters
+//    global_map_.info.origin.position.z = 0.0;  // Z coordinate (usually 0 for 2D maps)
+
+    // Set the orientation as a quaternion (identity orientation)
+    msg.info.origin.orientation.x = 0.0;  // Quaternion x
+    msg.info.origin.orientation.y = 0.0;  // Quaternion y
+    msg.info.origin.orientation.z = 0.0;  // Quaternion z
+    msg.info.origin.orientation.w = 1.0; 
+
+    msg.data.resize(300*300);
+    for (int x = 0; x < 300; ++x){
+      for(int y = 0; y < 300; ++y){
+        msg.data[y*300 + x] = array[x][y];
+      }
+    }
+    grid_pub_->publish(msg);
+    //publishCostmap(array);
 }
 
 
