@@ -1,159 +1,147 @@
 #include "planner_core.hpp"
-#include <queue>
-#include <cmath>
 
 namespace robot {
 
 PlannerCore::PlannerCore(const rclcpp::Logger& logger)
     : logger_(logger),
-      tf_buffer_(rclcpp::Clock::make_shared()),
-      tf_listener_(tf_buffer_) {}  // Correctly initialize TF buffer and listener
+      path_(std::make_shared<nav_msgs::msg::Path>()),
+      map_(std::make_shared<nav_msgs::msg::OccupancyGrid>()) {}
 
-void PlannerCore::computePath(
-    const nav_msgs::msg::OccupancyGrid &map,
-    const geometry_msgs::msg::Pose &start,
-    const geometry_msgs::msg::PointStamped &goal,
-    nav_msgs::msg::Path &path)
-{
-    // Transform the goal into the map frame
-    tf2_ros::Buffer tfBuffer(rclcpp::Clock::SharedPtr(new rclcpp::Clock()));
-    tf2_ros::TransformListener tfListener(tfBuffer);
+void PlannerCore::initPlanner(double smoothing_factor, int max_iterations) {
+    smoothing_factor_ = smoothing_factor;
+    iterations_ = max_iterations;
+}
 
-    geometry_msgs::msg::PointStamped goalInMap;
-    try {
-        geometry_msgs::msg::TransformStamped transformStamped =
-            tf_buffer_.lookupTransform("map", goal.header.frame_id, tf2::TimePointZero);
-        tf2::doTransform(goal, goalInMap, transformStamped);
-    } catch (const tf2::TransformException &ex) {
-        RCLCPP_WARN(logger_, "TF transform failed: %s", ex.what());
-        return;
+bool PlannerCore::planPath(
+    double start_world_x,
+    double start_world_y,
+    double goal_world_x,
+    double goal_world_y,
+    nav_msgs::msg::OccupancyGrid::SharedPtr map) {
+    map_ = map;
+
+    CellIndex start_idx, goal_idx;
+    if (!convertToMapCoordinates(start_world_x, start_world_y, start_idx) ||
+        !convertToMapCoordinates(goal_world_x, goal_world_y, goal_idx)) {
+        RCLCPP_WARN(logger_, "Start or goal position is out of map bounds. Aborting.");
+        return false;
     }
 
+    RCLCPP_INFO(logger_,
+                "Starting A* planning from world (%0.2f, %0.2f) [cell (%d, %d)] to goal (%0.2f, %0.2f) [cell (%d, %d)].",
+                start_world_x, start_world_y, start_idx.x, start_idx.y,
+                goal_world_x, goal_world_y, goal_idx.x, goal_idx.y);
 
-    // Clamp the goal to be within map boundaries
-    double gx_min = map.info.origin.position.x;
-    double gx_max = map.info.origin.position.x + map.info.width * map.info.resolution;
-    double gy_min = map.info.origin.position.y;
-    double gy_max = map.info.origin.position.y + map.info.height * map.info.resolution;
-
-    double gx = std::max(gx_min, std::min(goalInMap.point.x, gx_max));
-    double gy = std::max(gy_min, std::min(goalInMap.point.y, gy_max));
-
-    // Convert start/goal positions to grid indices
-    CellIndex start_idx = worldToGrid(map, start.position.x, start.position.y);
-    CellIndex goal_idx = worldToGrid(map, gx, gy);
-
-    // Check validity of start/goal
-    if (!isValid(map, start_idx) || !isValid(map, goal_idx)) {
-        int start_cell = start_idx.y * map.info.width + start_idx.x;
-        int goal_cell = goal_idx.y * map.info.width + goal_idx.x;
-        RCLCPP_WARN(logger_,
-                    "Invalid start or goal position! start_cell=%d, goal_cell=%d, map.data[start_cell]=%d, map.data[goal_cell]=%d",
-                    start_cell, goal_cell,
-                    map.data[start_cell], map.data[goal_cell]);
-        return;
+    std::vector<CellIndex> cell_path;
+    if (!runAStar(start_idx, goal_idx, cell_path)) {
+        RCLCPP_WARN(logger_, "A* failed to compute a path.");
+        return false;
     }
 
-    // Open list (priority queue) and closed set
-    std::priority_queue<AStarNode, std::vector<AStarNode>, CompareF> open_list;
-    std::unordered_map<CellIndex, CellIndex, CellIndexHash> came_from;
-    std::unordered_map<CellIndex, double, CellIndexHash> g_score;
+    convertPathToWorld(cell_path);
+    return true;
+}
 
-    open_list.emplace(start_idx, 0.0);
-    g_score[start_idx] = 0.0;
+bool PlannerCore::runAStar(
+    const CellIndex& start_idx,
+    const CellIndex& goal_idx,
+    std::vector<CellIndex>& result_path) {
+    std::priority_queue<AStarNode, std::vector<AStarNode>, CompareF> open_set;
+    std::unordered_map<CellIndex, double, CellIndexHash> g_scores;
+    std::unordered_map<CellIndex, CellIndex, CellIndexHash> predecessors;
 
-    // Perform A* search
-    while (!open_list.empty()) {
-        AStarNode current = open_list.top();
-        open_list.pop();
+    initializeAStar(start_idx, goal_idx, open_set, g_scores);
 
-        // Check if goal is reached
-        if (current.index == goal_idx) {
-            reconstructPath(came_from, goal_idx, path);
-            RCLCPP_INFO(logger_, "Path found with %lu points.", path.poses.size());
-            return;
+    while (!open_set.empty()) {
+        CellIndex current = open_set.top().index;
+        open_set.pop();
+
+        if (current == goal_idx) {
+            tracePath(predecessors, current, result_path);
+            return true;
         }
 
-        // Explore neighbors
-        for (const CellIndex &neighbor : getNeighbors(map, current.index)) {
-            double tentative_g_score = g_score[current.index] + 1.0;
+        for (const auto& neighbor : getNeighbors(current)) {
+            if (!isValidCell(neighbor)) continue;
 
-            if (g_score.find(neighbor) == g_score.end() || tentative_g_score < g_score[neighbor]) {
-                came_from[neighbor] = current.index;
-                g_score[neighbor] = tentative_g_score;
-
-                double f_score = tentative_g_score + heuristic(neighbor, goal_idx);
-                open_list.emplace(neighbor, f_score);
+            double new_g_score = g_scores[current] + calculateCost(current, neighbor);
+            if (new_g_score < g_scores[neighbor]) {
+                g_scores[neighbor] = new_g_score;
+                predecessors[neighbor] = current;
+                double f_score = new_g_score + euclideanHeuristic(neighbor, goal_idx);
+                open_set.emplace(neighbor, f_score);
             }
         }
     }
-
-    RCLCPP_WARN(logger_, "Pathfinding failed: No valid path to goal!");
-}
-CellIndex PlannerCore::worldToGrid(const nav_msgs::msg::OccupancyGrid &map, double x, double y) const {
-    int grid_x = static_cast<int>((x - map.info.origin.position.x) / map.info.resolution);
-    int grid_y = static_cast<int>((y - map.info.origin.position.y) / map.info.resolution);
-    return CellIndex(grid_x, grid_y);
+    return false;
 }
 
-bool PlannerCore::isValid(const nav_msgs::msg::OccupancyGrid &map, const CellIndex &idx) const {
-    int width = map.info.width;
-    int height = map.info.height;
-    int index = idx.y * width + idx.x;
-
-    return idx.x >= 0 && idx.x < width &&
-           idx.y >= 0 && idx.y < height &&
-           map.data[index] == 0; // 0 means free space
+void PlannerCore::initializeAStar(
+    const CellIndex& start_idx,
+    const CellIndex& goal_idx,
+    std::priority_queue<AStarNode, std::vector<AStarNode>, CompareF>& open_set,
+    std::unordered_map<CellIndex, double, CellIndexHash>& g_scores) {
+    g_scores[start_idx] = 0.0;
+    open_set.emplace(start_idx, euclideanHeuristic(start_idx, goal_idx));
 }
 
-double PlannerCore::heuristic(const CellIndex &a, const CellIndex &b) const {
-    // Manhattan distance
-    return std::abs(a.x - b.x) + std::abs(a.y - b.y);
+double PlannerCore::calculateCost(const CellIndex& from, const CellIndex& to) const {
+    int cell_cost = getCellCost(to);
+    double step_cost = stepDistance(from, to);
+    return step_cost + static_cast<double>(cell_cost) / 25.0;
 }
 
-std::vector<CellIndex> PlannerCore::getNeighbors(const nav_msgs::msg::OccupancyGrid &map, const CellIndex &idx) const {
-    std::vector<CellIndex> neighbors;
-    const std::vector<std::pair<int, int>> directions = {
-        {1, 0}, {-1, 0}, {0, 1}, {0, -1}
-    };
+void PlannerCore::convertPathToWorld(const std::vector<CellIndex>& cell_path) {
+    path_->poses.clear();
 
-    for (const auto &[dx, dy] : directions) {
-        CellIndex neighbor(idx.x + dx, idx.y + dy);
-        if (isValid(map, neighbor)) {
-            neighbors.push_back(neighbor);
-        }
-    }
-    return neighbors;
-}
-
-void PlannerCore::reconstructPath(
-    const std::unordered_map<CellIndex, CellIndex, CellIndexHash> &came_from,
-    const CellIndex &current, nav_msgs::msg::Path &path) const
-{
-    CellIndex idx = current;
-
-    while (came_from.find(idx) != came_from.end()) {
+    for (const auto& cell : cell_path) {
         geometry_msgs::msg::PoseStamped pose;
-        pose.header.frame_id = "map"; // Make sure this matches your map frame
-        pose.pose.position.x = idx.x;
-        pose.pose.position.y = idx.y;
-        pose.pose.position.z = 0.0;
+        pose.header = map_->header;
 
-        path.poses.push_back(pose);
-        idx = came_from.at(idx);
+        double wx, wy;
+        convertToWorldCoordinates(cell, wx, wy);
+        pose.pose.position.x = wx;
+        pose.pose.position.y = wy;
+        pose.pose.orientation.w = 1.0;  // Neutral orientation
+        path_->poses.push_back(pose);
     }
-
-    // Add the start cell
-    geometry_msgs::msg::PoseStamped start_pose;
-    start_pose.header.frame_id = "map";
-    start_pose.pose.position.x = idx.x;
-    start_pose.pose.position.y = idx.y;
-    start_pose.pose.position.z = 0.0;
-    path.poses.push_back(start_pose);
-
-    // Reverse so path goes from start to goal
-    std::reverse(path.poses.begin(), path.poses.end());
 }
 
-} // namespace robot
+void PlannerCore::tracePath(
+    const std::unordered_map<CellIndex, CellIndex, CellIndexHash>& predecessors,
+    CellIndex current,
+    std::vector<CellIndex>& path_out) {
+    path_out.clear();
+    while (predecessors.find(current) != predecessors.end()) {
+        path_out.push_back(current);
+        current = predecessors.at(current);
+    }
+    path_out.push_back(current);
+    std::reverse(path_out.begin(), path_out.end());
+}
 
+int PlannerCore::getCellCost(const CellIndex& idx) const {
+    if (idx.x < 0 || idx.x >= map_->info.width || idx.y < 0 || idx.y >= map_->info.height) {
+        return 127;  // Out of bounds treated as high cost
+    }
+
+    int map_index = idx.y * map_->info.width + idx.x;
+    int8_t value = map_->data[map_index];
+    return (value < 0) ? 100 : value;  // Treat unknown values as high cost
+}
+
+std::vector<CellIndex> PlannerCore::getNeighbors(const CellIndex& idx) const {
+    return {
+        {idx.x - 1, idx.y}, {idx.x + 1, idx.y},
+        {idx.x, idx.y - 1}, {idx.x, idx.y + 1},
+        {idx.x - 1, idx.y - 1}, {idx.x + 1, idx.y + 1},
+        {idx.x - 1, idx.y + 1}, {idx.x + 1, idx.y - 1}};
+}
+
+bool PlannerCore::isValidCell(const CellIndex& idx) const {
+    return idx.x >= 0 && idx.x < map_->info.width &&
+           idx.y >= 0 && idx.y < map_->info.height &&
+           getCellCost(idx) <= 90;
+}
+
+}  // namespace robot

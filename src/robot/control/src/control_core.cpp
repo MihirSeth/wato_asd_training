@@ -1,85 +1,124 @@
 #include "control_core.hpp"
 #include <cmath>
-#include <geometry_msgs/msg/twist.hpp>
 
-namespace robot {
+namespace robot
+{
 
-ControlCore::ControlCore(const rclcpp::Logger &logger) : logger_(logger), lookahead_distance_(1.0), linear_speed_(0.5) {}
+ControlCore::ControlCore(const rclcpp::Logger& logger) 
+  : path_(nav_msgs::msg::Path()), logger_(logger) {}
 
-void ControlCore::updatePath(const nav_msgs::msg::Path::SharedPtr path) {
-    current_path_ = path;
-    RCLCPP_INFO(logger_, "Path updated with %lu points.", path->poses.size());
+void ControlCore::initControlCore(
+  double lookahead_distance,
+  double max_steering_angle,
+  double steering_gain,
+  double linear_velocity
+) {
+  lookahead_distance_ = lookahead_distance;
+  max_steering_angle_ = max_steering_angle;
+  steering_gain_ = steering_gain;
+  linear_velocity_ = linear_velocity;
 }
 
-void ControlCore::updateOdometry(const nav_msgs::msg::Odometry::SharedPtr odom) {
-    robot_odom_ = odom;
+void ControlCore::updatePath(nav_msgs::msg::Path path) {
+  RCLCPP_INFO(logger_, "Path Updated");
+  path_ = path;
 }
 
-void ControlCore::controlLoop() {
-    if (!current_path_ || !robot_odom_) {
-        RCLCPP_WARN(logger_, "Missing path or odometry data!");
-        return;
+bool ControlCore::isPathEmpty() {
+  return path_.poses.empty();
+}
+
+geometry_msgs::msg::Twist ControlCore::calculateControlCommand(double robot_x, double robot_y, double robot_theta) {
+  geometry_msgs::msg::Twist twist;
+  unsigned int lookahead_index = findLookaheadPoint(robot_x, robot_y, robot_theta);
+  if (lookahead_index >= path_.poses.size()) {
+    return twist;
+  }
+
+  // Get the lookahead point coordinates
+  double lookahead_x = path_.poses[lookahead_index].pose.position.x;
+  double lookahead_y = path_.poses[lookahead_index].pose.position.y;
+
+  // Calculate the distance to the lookahead point
+  double dx = lookahead_x - robot_x;
+  double dy = lookahead_y - robot_y;
+
+  // Calculate the angle to the lookahead point
+  double angle_to_lookahead = std::atan2(dy, dx);
+
+  // Calculate the steering angle (difference between robot's heading and lookahead direction)
+  double steering_angle = angle_to_lookahead - robot_theta;
+
+  // Normalize the steering angle to the range [-pi, pi]
+  if (steering_angle > M_PI) {
+    steering_angle -= 2 * M_PI;
+  } else if (steering_angle < -M_PI) {
+    steering_angle += 2 * M_PI;
+  }
+
+  // If the steering angle exceeds the limit, prevent forward movement
+  if (std::abs(steering_angle) > std::abs(max_steering_angle_)) {
+    twist.linear.x = 0;
+  } else {
+    twist.linear.x = linear_velocity_;
+  }
+
+  // Limit the steering angle and set angular velocity
+  steering_angle = std::clamp(steering_angle, -max_steering_angle_, max_steering_angle_);
+  twist.angular.z = steering_angle * steering_gain_;
+  return twist;
+}
+
+unsigned int ControlCore::findLookaheadPoint(double robot_x, double robot_y, double robot_theta) {
+  double min_distance = std::numeric_limits<double>::max();
+  int lookahead_index = 0;
+  bool found_forward = false;
+
+  // Loop through path points to find the closest valid lookahead point
+  for (size_t i = 0; i < path_.poses.size(); ++i) {
+    double dx = path_.poses[i].pose.position.x - robot_x;
+    double dy = path_.poses[i].pose.position.y - robot_y;
+    double distance = std::sqrt(dx * dx + dy * dy);
+
+    // Skip points too close
+    if (distance < lookahead_distance_)
+      continue;
+
+    // Calculate the angle difference
+    double angle_to_point = std::atan2(dy, dx);
+    double angle_diff = angle_to_point - robot_theta;
+
+    // Normalize the angle difference to [-pi, pi]
+    if (angle_diff > M_PI) angle_diff -= 2 * M_PI;
+    if (angle_diff < -M_PI) angle_diff += 2 * M_PI;
+
+    // Check if the point is in the forward direction
+    if (std::abs(angle_diff) < M_PI / 2) {
+      if (distance < min_distance) {
+        min_distance = distance;
+        lookahead_index = i;
+        found_forward = true;
+      }
     }
+  }
 
-    auto lookahead_point = findLookaheadPoint();
-    if (!lookahead_point) {
-        RCLCPP_INFO(logger_, "No valid lookahead point found. Stopping robot.");
-        stopRobot();
-        return;
+  // If no forward point found, find the closest point regardless of direction
+  if (!found_forward) {
+    for (size_t i = 0; i < path_.poses.size(); ++i) {
+      double dx = path_.poses[i].pose.position.x - robot_x;
+      double dy = path_.poses[i].pose.position.y - robot_y;
+      double distance = std::sqrt(dx * dx + dy * dy);
+
+      if (distance < lookahead_distance_)
+        continue;
+
+      if (distance < min_distance) {
+        min_distance = distance;
+        lookahead_index = i;
+      }
     }
-
-    auto cmd_vel = computeVelocity(*lookahead_point);
-    cmd_vel_pub_->publish(cmd_vel);
-}
-
-void ControlCore::setPublisher(rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub) {
-    cmd_vel_pub_ = pub;
-}
-
-std::optional<geometry_msgs::msg::PoseStamped> ControlCore::findLookaheadPoint() {
-    if (!current_path_ || current_path_->poses.empty()) {
-        RCLCPP_WARN(logger_, "Current path is empty.");
-        return std::nullopt;
-    }
-
-    for (const auto &pose : current_path_->poses) {
-        double distance = computeDistance(robot_odom_->pose.pose.position, pose.pose.position);
-        RCLCPP_INFO(logger_, "Checking pose at distance: %f", distance);
-        if (distance >= lookahead_distance_) {
-            RCLCPP_INFO(logger_, "Found lookahead point at distance: %f", distance);
-            return pose;
-        }
-    }
-
-    RCLCPP_WARN(logger_, "No valid lookahead point found in the path.");
-    return std::nullopt;
-}
-
-geometry_msgs::msg::Twist ControlCore::computeVelocity(const geometry_msgs::msg::PoseStamped &target) {
-    geometry_msgs::msg::Twist cmd_vel;
-    double target_yaw = std::atan2(target.pose.position.y - robot_odom_->pose.pose.position.y,
-                                   target.pose.position.x - robot_odom_->pose.pose.position.x);
-    double robot_yaw = extractYaw(robot_odom_->pose.pose.orientation);
-
-    double angle_diff = std::atan2(std::sin(target_yaw - robot_yaw), std::cos(target_yaw - robot_yaw));
-
-    cmd_vel.linear.x = linear_speed_;
-    cmd_vel.angular.z = 2.0 * angle_diff;  // Gain factor for angular velocity
-    return cmd_vel;
-}
-
-void ControlCore::stopRobot() {
-    geometry_msgs::msg::Twist stop_cmd;
-    cmd_vel_pub_->publish(stop_cmd);
-}
-
-double ControlCore::computeDistance(const geometry_msgs::msg::Point &a, const geometry_msgs::msg::Point &b) {
-    return std::sqrt(std::pow(a.x - b.x, 2) + std::pow(a.y - b.y, 2) + std::pow(a.z - b.z, 2));
-}
-
-double ControlCore::extractYaw(const geometry_msgs::msg::Quaternion &quat) {
-    return std::atan2(2.0 * (quat.w * quat.z + quat.x * quat.y),
-                      1.0 - 2.0 * (quat.y * quat.y + quat.z * quat.z));
+  }
+  return lookahead_index;
 }
 
 } // namespace robot
